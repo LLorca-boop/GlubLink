@@ -1,42 +1,34 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
+import 'core/database/database_service.dart';
+import 'core/services/ai_service.dart';
+import 'core/navigation/app_router.dart';
 import 'core/theme/app_theme.dart';
-import 'core/navigation/navigation_history.dart';
-import 'features/home/presentation/home_screen.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  // Инициализация базы данных
+  await DatabaseService.initialize();
+  
+  // Инициализация AI сервиса
+  await AiService().initialize();
+  
   runApp(const ProviderScope(child: GlubLinkApp()));
 }
 
-// ✅ Провайдер для глобальной истории навигации
-final navigationHistoryProvider = ChangeNotifierProvider((ref) {
-  return NavigationHistory();
-});
-
-class GlubLinkApp extends ConsumerWidget {
+class GlubLinkApp extends StatelessWidget {
   const GlubLinkApp({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     return MaterialApp.router(
       title: 'GlubLink',
       debugShowCheckedModeBanner: false,
-      theme: AppTheme.lightTheme,
+      theme: AppTheme.darkTheme,
       darkTheme: AppTheme.darkTheme,
       themeMode: ThemeMode.dark,
-      routerConfig: _router,
+      routerConfig: AppRouter.router,
     );
   }
 }
-
-final GoRouter _router = GoRouter(
-  initialLocation: '/',
-  routes: [
-    GoRoute(
-      path: '/',
-      name: 'home',
-      builder: (context, state) => const HomeScreen(),
-    ),
-  ],
-);
