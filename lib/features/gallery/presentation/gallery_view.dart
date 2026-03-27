@@ -8,6 +8,7 @@ import '../widgets/pinned_tags_bar.dart';
 import '../widgets/media_grid.dart';
 import '../widgets/gallery_right_panel.dart';
 import '../../../core/navigation/navigation_history.dart';
+import '../../media_fullscreen/presentation/media_fullscreen_screen.dart';
 
 class GalleryView extends StatefulWidget {
   final Function(NavigationAction)? onAction;
@@ -434,7 +435,28 @@ class GalleryViewState extends State<GalleryView> {
     widget.onFolderPathChanged?.call(path);
   }
 
-  void _onMediaTap(Map<String, dynamic> media) {}
+  void _onMediaTap(Map<String, dynamic> media) {
+    // ✅ Открываем MediaFullscreenScreen при клике на медиа
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => MediaFullscreenScreen(
+          mediaFiles: _displayedFiles,
+          initialIndex: _displayedFiles.indexOf(media),
+          currentPath: _currentPath,
+          onTagClick: (tagName) {
+            // ✅ Закрываем фуллскрин и открываем поиск с тегом
+            Navigator.of(context).pop();
+            setState(() {
+              _rightPanelSearchQuery = tagName;
+              _activeFilterTag = 'All';
+              _currentPage = 0;
+              _updateDisplayedFiles();
+            });
+          },
+        ),
+      ),
+    );
+  }
 
   List<Map<String, dynamic>> _filterMediaBySearch() {
     List<Map<String, dynamic>> results = List.from(_allMediaFiles);
