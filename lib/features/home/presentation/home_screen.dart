@@ -39,7 +39,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     _navigationHistory.add(action);
     _currentHistoryIndex = _navigationHistory.length - 1;
-    setState(() {});
   }
 
   void _navigateToPage(String page) {
@@ -90,14 +89,12 @@ class _HomeScreenState extends State<HomeScreen> {
       default:
         break;
     }
-    setState(() {});
   }
 
   void _refresh() {
     if (_currentPage == 'media') {
       _galleryKey.currentState?.refresh();
     }
-    setState(() {});
   }
 
   void _selectFolder() {
@@ -279,8 +276,16 @@ class _HomeScreenState extends State<HomeScreen> {
   }) {
     return MouseRegion(
       cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hoveredButtonIndex = index),
-      onExit: (_) => setState(() => _hoveredButtonIndex = null),
+      onEnter: (_) {
+        if (_hoveredButtonIndex != index) {
+          setState(() => _hoveredButtonIndex = index);
+        }
+      },
+      onExit: (_) {
+        if (_hoveredButtonIndex != null) {
+          setState(() => _hoveredButtonIndex = null);
+        }
+      },
       child: AnimatedContainer(
         duration: GlubSpringConfig.microInteraction,
         margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
@@ -350,8 +355,16 @@ class _HomeScreenState extends State<HomeScreen> {
   }) {
     return MouseRegion(
       cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hoveredButtonIndex = index),
-      onExit: (_) => setState(() => _hoveredButtonIndex = null),
+      onEnter: (_) {
+        if (_hoveredButtonIndex != index) {
+          setState(() => _hoveredButtonIndex = index);
+        }
+      },
+      onExit: (_) {
+        if (_hoveredButtonIndex != null) {
+          setState(() => _hoveredButtonIndex = null);
+        }
+      },
       child: AnimatedContainer(
         duration: GlubSpringConfig.microInteraction,
         margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),

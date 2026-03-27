@@ -2,7 +2,11 @@ import 'package:flutter/material.dart';
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
+import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
+import 'package:video_player/video_player.dart';
+import 'package:visibility_detector/visibility_detector.dart';
 import '../../../../core/theme/app_theme.dart';
 
 class MediaGrid extends StatefulWidget {
@@ -37,10 +41,21 @@ class MediaGrid extends StatefulWidget {
 
 class _MediaGridState extends State<MediaGrid> {
   final Map<String, Uint8List> _imageCache = {};
-  static const int _maxCacheSize = 50;
+  static const int _maxCacheSize = 100;
   final ScrollController _scrollController = ScrollController();
   final Set<String> _loadingPaths = {};
-  final Map<String, bool> _errorPaths = {};  // ✅ Кэш ошибок
+  final Map<String, bool> _errorPaths = {};
+  final Map<String, ui.Image> _decodedImageCache = {};
+  static const int _maxDecodedCacheSize = 50;
+  
+  // ✅ Кэш для видео-контроллеров (для превью)
+  final Map<String, VideoPlayerController> _videoPreviewControllers = {};
+  final Set<String> _visibleVideoPaths = {};
+  
+  // ✅ Кэш для расчётов строк (memoization)
+  List<List<Map<String, dynamic>>>? _cachedRows;
+  double? _cachedMaxWidth;
+  String? _cachedFilesHash;
 
   @override
   void initState() {
@@ -53,9 +68,29 @@ class _MediaGridState extends State<MediaGrid> {
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     _imageCache.clear();
+    _decodedImageCache.clear();
     _loadingPaths.clear();
     _errorPaths.clear();
+    _cachedRows = null;
+    // ✅ Очищаем видео-контроллеры
+    for (var controller in _videoPreviewControllers.values) {
+      controller.pause();
+      controller.dispose();
+    }
+    _videoPreviewControllers.clear();
+    _visibleVideoPaths.clear();
     super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(MediaGrid oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // ✅ Сбрасываем кэш строк только если изменились файлы или ширина
+    if (oldWidget.mediaFiles != widget.mediaFiles || 
+        oldWidget.isJustifiedLayout != widget.isJustifiedLayout) {
+      _cachedRows = null;
+      _cachedFilesHash = null;
+    }
   }
 
   void _onScroll() {
@@ -136,7 +171,9 @@ class _MediaGridState extends State<MediaGrid> {
   Widget _buildJustifiedGrid(double maxWidth, bool isDark) {
     const double targetRowHeight = 250.0;
     const double gap = 4.0;
-    List<List<Map<String, dynamic>>> rows = _calculateRows(
+    
+    // ✅ Используем кэш для расчёта строк
+    final rows = _calculateRowsWithCache(
       widget.mediaFiles,
       maxWidth,
       targetRowHeight,
@@ -158,17 +195,47 @@ class _MediaGridState extends State<MediaGrid> {
       );
     }
 
-    return ListView(
+    return ListView.builder(
       controller: _scrollController,
-      children: [
-        ...rowWidgets,
-        if (widget.isLoading)
-          const Padding(
-            padding: EdgeInsets.all(16),
-            child: Center(child: CircularProgressIndicator()),
-          ),
-      ],
+      itemCount: rowWidgets.length + (widget.isLoading ? 1 : 0),
+      itemBuilder: (context, index) {
+        if (index < rowWidgets.length) {
+          return rowWidgets[index];
+        }
+        return const Padding(
+          padding: EdgeInsets.all(16),
+          child: Center(child: CircularProgressIndicator()),
+        );
+      },
     );
+  }
+
+  String _generateFilesHash(List<Map<String, dynamic>> files) {
+    return '${files.length}_${files.isEmpty ? '' : files.first['path']}_${files.last['path']}';
+  }
+
+  List<List<Map<String, dynamic>>> _calculateRowsWithCache(
+    List<Map<String, dynamic>> files,
+    double maxWidth,
+    double targetRowHeight,
+    double gap,
+  ) {
+    final filesHash = _generateFilesHash(files);
+    
+    // ✅ Проверяем кэш
+    if (_cachedRows != null && 
+        _cachedMaxWidth == maxWidth && 
+        _cachedFilesHash == filesHash) {
+      return _cachedRows!;
+    }
+    
+    // ✅ Вычисляем и кэшируем
+    final rows = _calculateRows(files, maxWidth, targetRowHeight, gap);
+    _cachedRows = rows;
+    _cachedMaxWidth = maxWidth;
+    _cachedFilesHash = filesHash;
+    
+    return rows;
   }
 
   List<List<Map<String, dynamic>>> _calculateRows(
@@ -398,24 +465,29 @@ class _MediaGridState extends State<MediaGrid> {
     final fileType = mediaFile['type'] as String;
 
     if (fileType == 'video') {
-      return Stack(
-        fit: StackFit.expand,
-        children: [
-          Container(
-            color: isDark ? AppTheme.backgroundColorDark : AppTheme.backgroundColorLight,
-            child: const Center(
-              child: Icon(
-                Icons.play_circle_outline_rounded,
-                size: 48,
-                color: AppTheme.activeButtonColor,
-              ),
-            ),
-          ),
-        ],
-      );
+      return _buildVideoPreview(mediaFile, isDark, width, height);
     } else {
       return _buildResilientImage(filePath, isDark, width, height, fileType);
     }
+  }
+
+  // ✅ Видео-превью с рандомным кадром и автозапуском при появлении
+  Widget _buildVideoPreview(Map<String, dynamic> mediaFile, bool isDark, double width, double height) {
+    final filePath = mediaFile['path'] as String;
+    
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return _VideoPreviewWidget(
+          videoPath: filePath,
+          isDark: isDark,
+          width: width,
+          height: height,
+          onControllerReady: (controller) {
+            _videoPreviewControllers[filePath] = controller;
+          },
+        );
+      },
+    );
   }
 
   // ✅ УСТОЙЧИВАЯ ЗАГРУЗКА ИЗОБРАЖЕНИЙ С ОБРАБОТКОЙ ОШИБОК
@@ -582,8 +654,8 @@ class _MediaGridState extends State<MediaGrid> {
     }
   }
 
-  // ✅ УЛУЧШЕННАЯ ОТРИСОВКА С ОБРАБОТКОЙ ОШИБОК
-    Widget _buildDecodedImage(
+  // ✅ УЛУЧШЕННАЯ ОТРИСОВКА С ОБРАБОТКОЙ ОШИБОК И КЭШИРОВАНИЕМ
+  Widget _buildDecodedImage(
     Uint8List bytes,
     bool isDark,
     double width,
@@ -591,32 +663,248 @@ class _MediaGridState extends State<MediaGrid> {
     String filePath,
     String fileType,
   ) {
+    // ✅ Для GIF используем Image.memory для поддержки анимации
+    if (fileType == 'gif') {
+      return Image.memory(
+        bytes,
+        fit: BoxFit.contain,
+        width: width,
+        height: height,
+        alignment: Alignment.topCenter,
+        gaplessPlayback: true,
+        filterQuality: FilterQuality.medium,
+        excludeFromSemantics: true,
+        errorBuilder: (context, error, stackTrace) {
+          // ✅ Кэшируем ошибку чтобы не пытаться загрузить снова
+          _errorPaths[filePath] = true;
+          return _buildErrorPlaceholder(isDark, fileType);
+        },
+        frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+          if (wasSynchronouslyLoaded) {
+            return child;
+          }
+          return AnimatedOpacity(
+            opacity: frame == null ? 0 : 1,
+            duration: const Duration(milliseconds: 300),
+            child: child,
+          );
+        },
+      );
+    }
+
+    // ✅ Для остальных форматов - используем кэшированное ui.Image или создаём новое
+    final cachedImage = _decodedImageCache[filePath];
+    if (cachedImage != null) {
+      return _buildImageFromUiImage(
+        cachedImage,
+        isDark,
+        width,
+        height,
+        filePath,
+        fileType,
+      );
+    }
+
+    // ✅ Если изображения нет в кэше, используем Image.memory как фоллбэк
     return Image.memory(
       bytes,
       fit: BoxFit.contain,
       width: width,
       height: height,
       alignment: Alignment.topCenter,
-      gaplessPlayback: true,
       filterQuality: FilterQuality.medium,
       excludeFromSemantics: true,
       cacheWidth: (width * 2).round(),
       cacheHeight: (height * 2).round(),
       errorBuilder: (context, error, stackTrace) {
-        // ✅ Кэшируем ошибку чтобы не пытаться загрузить снова
         _errorPaths[filePath] = true;
         return _buildErrorPlaceholder(isDark, fileType);
       },
-      frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
-        if (wasSynchronouslyLoaded) {
-          return child;
+    );
+  }
+
+  // ✅ Отрисовка из кэшированного ui.Image
+  Widget _buildImageFromUiImage(
+    ui.Image image,
+    bool isDark,
+    double width,
+    double height,
+    String filePath,
+    String fileType,
+  ) {
+    return RawImage(
+      image: image,
+      fit: BoxFit.contain,
+      width: width,
+      height: height,
+      alignment: Alignment.topCenter,
+      filterQuality: FilterQuality.medium,
+    );
+  }
+
+  // ✅ Добавление в кэш декодированных изображений
+  void _addToDecodedCache(String path, ui.Image image) {
+    if (_decodedImageCache.length >= _maxDecodedCacheSize) {
+      final firstKey = _decodedImageCache.keys.first;
+      _decodedImageCache[firstKey]?.dispose();
+      _decodedImageCache.remove(firstKey);
+    }
+    _decodedImageCache[path] = image;
+  }
+}
+
+// ✅ Отдельный виджет для видео-превью с VisibilityDetector
+class _VideoPreviewWidget extends StatefulWidget {
+  final String videoPath;
+  final bool isDark;
+  final double width;
+  final double height;
+  final Function(VideoPlayerController)? onControllerReady;
+
+  const _VideoPreviewWidget({
+    required this.videoPath,
+    required this.isDark,
+    required this.width,
+    required this.height,
+    this.onControllerReady,
+  });
+
+  @override
+  State<_VideoPreviewWidget> createState() => _VideoPreviewWidgetState();
+}
+
+class _VideoPreviewWidgetState extends State<_VideoPreviewWidget> {
+  VideoPlayerController? _controller;
+  bool _isInitialized = false;
+  bool _isError = false;
+  bool _isVisible = false;
+  int? _randomFramePosition;
+  Timer? _seekTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeVideo();
+  }
+
+  Future<void> _initializeVideo() async {
+    try {
+      final file = File(widget.videoPath);
+      if (!await file.exists()) {
+        setState(() => _isError = true);
+        return;
+      }
+
+      _controller = VideoPlayerController.file(file);
+      
+      await _controller!.initialize();
+      
+      if (!mounted) {
+        _controller?.dispose();
+        return;
+      }
+
+      // ✅ Генерируем случайную позицию для начального кадра (5-95% видео)
+      final duration = _controller!.value.duration;
+      final random = math.Random();
+      final randomPercent = 0.05 + (random.nextDouble() * 0.90); // 5% to 95%
+      _randomFramePosition = (duration.inMilliseconds * randomPercent).round();
+
+      // ✅ Переходим к случайному кадру
+      await _controller!.seekTo(Duration(milliseconds: _randomFramePosition!));
+      
+      setState(() {
+        _isInitialized = true;
+      });
+
+      widget.onControllerReady?.call(_controller!);
+
+      // ✅ Автозапуск при появлении на экране
+      if (_isVisible) {
+        await _controller!.play();
+      }
+    } catch (e) {
+      debugPrint('Error initializing video ${widget.videoPath}: $e');
+      if (mounted) {
+        setState(() => _isError = true);
+      }
+    }
+  }
+
+  @override
+  void didUpdateWidget(_VideoPreviewWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.videoPath != widget.videoPath) {
+      _controller?.dispose();
+      _controller = null;
+      _isInitialized = false;
+      _initializeVideo();
+    }
+  }
+
+  @override
+  void dispose() {
+    _seekTimer?.cancel();
+    _controller?.pause();
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  void _onVisibilityChanged(bool isVisible) {
+    _isVisible = isVisible;
+    
+    if (_isInitialized && _controller != null) {
+      if (isVisible) {
+        // ✅ Запускаем видео когда оно появляется на экране
+        _controller!.play();
+      } else {
+        // ✅ Пауза когда видео уходит с экрана
+        _controller!.pause();
+        // ✅ Возвращаемся к случайному кадру
+        if (_randomFramePosition != null) {
+          _controller!.seekTo(Duration(milliseconds: _randomFramePosition!));
         }
-        return AnimatedOpacity(
-          opacity: frame == null ? 0 : 1,
-          duration: const Duration(milliseconds: 300),
-          child: child,
-        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isError) {
+      return Container(
+        color: widget.isDark ? AppTheme.backgroundColorDark : AppTheme.backgroundColorLight,
+        child: const Center(
+          child: Icon(
+            Icons.broken_image_rounded,
+            size: 48,
+            color: AppTheme.textSecondaryDark,
+          ),
+        ),
+      );
+    }
+
+    if (!_isInitialized || _controller == null) {
+      return Container(
+        color: widget.isDark ? AppTheme.surfaceColorDark : AppTheme.surfaceColorLight,
+        child: const Center(
+          child: Icon(
+            Icons.videocam_outlined,
+            size: 48,
+            color: AppTheme.textSecondaryDark,
+          ),
+        ),
+      );
+    }
+
+    return VisibilityDetector(
+      key: ValueKey('video_visibility_${widget.videoPath}'),
+      onVisibilityChanged: (visibilityInfo) {
+        _onVisibilityChanged(visibilityInfo.visibleFraction > 0.1);
       },
+      child: AspectRatio(
+        aspectRatio: _controller!.value.aspectRatio,
+        child: VideoPlayer(_controller!),
+      ),
     );
   }
 }
