@@ -1,9 +1,0 @@
-include: package:very_good_analysis/analysis_options.yaml
-
-linter:
-  rules:
-    # Allow public members to be documented via context
-    public_member_api_docs: false
-    # Allow non-constant boolean literals in conditions
-    prefer_const_literals_to_create_immutables: false
-    prefer_const_constructors: false
